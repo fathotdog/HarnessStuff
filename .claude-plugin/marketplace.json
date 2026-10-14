@@ -1,0 +1,8 @@
+{
+  "name": "nornor-mods",
+  "description": "nornor 自製的 Claude Code mod：cache-timer 等。",
+  "owner": { "name": "nornor" },
+  "plugins": [
+    { "name": "cache-timer", "source": "./cache-timer" }
+  ]
+}

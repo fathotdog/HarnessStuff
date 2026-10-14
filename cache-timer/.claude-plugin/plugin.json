@@ -1,0 +1,21 @@
+{
+  "name": "cache-timer",
+  "version": "0.1.0",
+  "author": { "name": "nornor" },
+  "description": "Shows how long until the main conversation's prompt cache expires, and warns before it does.",
+  "userConfig": {
+    "ttl": {
+      "type": "string",
+      "title": "Prompt cache TTL",
+      "description": "The starting TTL: 1h normally; 5m once the account is in usage overage. A model switch, or a cache read long after the last response, corrects it.",
+      "options": ["1h", "5m"],
+      "default": "1h"
+    },
+    "warnMinutes": {
+      "type": "number",
+      "title": "Warn at (minutes left)",
+      "description": "A toast shows once when this many minutes are left.",
+      "default": 10
+    }
+  }
+}
