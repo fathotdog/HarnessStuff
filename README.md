@@ -36,12 +36,23 @@ claude plugin install cache-timer --marketplace fathotdog/HarnessStuff
 - 閒置超過 7 分鐘後下一則請求若仍有 cache 命中，判定 TTL 為 1 小時；若沒命中，toast 提示 TTL 可能已縮成 5 分鐘（只提示一次）。
 - `/clear` 會清掉倒數。
 
+#### 自動續命（`/cache-keepalive`）
+
+`/cache-keepalive` 開關（也可帶 `on` / `off`），只對目前這個 session 有效，新 session 或 mod 重載後回到關閉。開啟時狀態列顯示 `快取剩 N 分 · 自動續命`，到期前 2 分鐘自動送一則短訊息（模型只回「ok」）讓快取重新計時。
+
+- 1h TTL：約 58 分鐘送一次，每次只花一次讀快取的錢（約原價 0.1 倍），比過期後重寫（約 2 倍）便宜得多。
+- 5m TTL：約每 3 分鐘送一次，一小時約 20 次讀取 ≈ 2 倍，比回來時重寫一次（約 1.25 倍）還貴；只在短暫離開時划算，所以這時閒置上限固定最多 30 分鐘（`keepAliveHours` 設更短則以設定為準）。
+- 每次續命都會在對話裡多一個回合（Remote Control 的手機端也看得到）。
+- 超過 `keepAliveHours` 小時沒有你自己的訊息就停止續命並 toast 通知；你下一則訊息會讓它恢復。
+- 5m TTL 下續命讓閒置間隔一直短於 7 分鐘，`ttl` 不會被自動校正回 1h，需要時手動改設定。
+
 設定（`/plugin` → cache-timer → 設定）：
 
 | 選項 | 說明 | 預設 |
 |---|---|---|
 | `ttl` | 起始 TTL，`1h` 或 `5m` | `1h` |
 | `warnMinutes` | 剩幾分鐘時 toast 提醒 | `10` |
+| `keepAliveHours` | 自動續命在你閒置幾小時後停止（5m TTL 時最多 30 分鐘） | `3` |
 
 #### 開發
 

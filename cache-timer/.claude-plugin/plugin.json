@@ -1,6 +1,6 @@
 {
   "name": "cache-timer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": { "name": "nornor" },
   "description": "Shows how long until the main conversation's prompt cache expires, and warns before it does.",
   "userConfig": {
@@ -16,6 +16,12 @@
       "title": "Warn at (minutes left)",
       "description": "A toast shows once when this many minutes are left.",
       "default": 10
+    },
+    "keepAliveHours": {
+      "type": "number",
+      "title": "Keep-alive idle limit (hours)",
+      "description": "With /cache-keepalive on, resends stop once this many hours pass without a prompt of your own.",
+      "default": 3
     }
   }
 }

@@ -7,12 +7,29 @@ const LONG_TTL_MS = 60 * MINUTE_MS
 // Requests sent right after a response (suggestions, summaries) can refresh the
 // cache too, so a gap must clear 5 minutes by a margin before it says anything.
 const PROBE_GAP_MS = SHORT_TTL_MS + 2 * MINUTE_MS
+// Keep-alive resends this long before expiry, so a 15 s tick and a slow
+// submission still land inside the TTL.
+const KEEPALIVE_LEAD_MS = 2 * MINUTE_MS
+// At a 5m TTL each resend comes every ~3 minutes, about 2x the input price an
+// hour, so past ~30 idle minutes letting it expire and rewriting once is cheaper.
+const SHORT_TTL_IDLE_LIMIT_MS = 30 * MINUTE_MS
+const KEEPALIVE_TEXT =
+  '[cache-timer 自動續命] 這是為了保住 prompt cache 自動送出的訊息，不需要做任何事，只回覆「ok」。'
 
 type Countdown = {
   ttlMs: number
   warnMs: number
   sentAt: number | undefined
   hasWarned: boolean
+}
+
+// Session-only: module state, so a new session (or a reload of the mod) starts off.
+type KeepAlive = {
+  isOn: boolean
+  idleLimitMs: number
+  lastUserAt: number | undefined
+  hasSent: boolean
+  hasStopped: boolean
 }
 
 // What the last main-thread response leaves for telling the TTL from the next one.
@@ -23,13 +40,26 @@ type Probe = {
   hasSuspected: boolean
 }
 
-async function show($: EngineInterface, c: Countdown) {
+function idleLimitMs(c: Countdown, k: KeepAlive) {
+  return c.ttlMs === SHORT_TTL_MS ? Math.min(k.idleLimitMs, SHORT_TTL_IDLE_LIMIT_MS) : k.idleLimitMs
+}
+
+function describeSpan(ms: number) {
+  return ms < 60 * MINUTE_MS ? `${Math.round(ms / MINUTE_MS)} 分鐘` : `${Math.round(ms / (60 * MINUTE_MS))} 小時`
+}
+
+function isKeepAliveDue(c: Countdown, k: KeepAlive, now: number) {
+  return k.isOn && (k.lastUserAt === undefined || now - k.lastUserAt < idleLimitMs(c, k))
+}
+
+async function show($: EngineInterface, c: Countdown, k: KeepAlive) {
   if (c.sentAt === undefined) {
     $.ui.status(undefined)
     return
   }
 
-  const leftMs = c.ttlMs - ((await $.clock.now()) - c.sentAt)
+  const now = await $.clock.now()
+  const leftMs = c.ttlMs - (now - c.sentAt)
 
   if (leftMs <= 0) {
     $.ui.status('快取已過期')
@@ -37,11 +67,36 @@ async function show($: EngineInterface, c: Countdown) {
   }
 
   const minutes = Math.ceil(leftMs / MINUTE_MS)
-  $.ui.status(`快取剩 ${minutes} 分`)
+  $.ui.status(k.isOn ? `快取剩 ${minutes} 分 · 自動續命` : `快取剩 ${minutes} 分`)
 
   if (!c.hasWarned && c.warnMs < c.ttlMs && leftMs <= c.warnMs) {
     c.hasWarned = true
-    $.ui.toast(`快取再 ${minutes} 分鐘過期；過期後下一則訊息會重寫整段快取`, { timeoutMs: 15_000 })
+    $.ui.toast(
+      isKeepAliveDue(c, k, now)
+        ? `快取再 ${minutes} 分鐘過期；自動續命已開，到期前 2 分鐘會自動送一則訊息`
+        : `快取再 ${minutes} 分鐘過期；過期後下一則訊息會重寫整段快取`,
+      { timeoutMs: 15_000 },
+    )
+  }
+
+  if (!k.isOn || k.hasSent || leftMs > KEEPALIVE_LEAD_MS) {
+    return
+  }
+
+  if (!isKeepAliveDue(c, k, now)) {
+    if (!k.hasStopped) {
+      k.hasStopped = true
+      const span = describeSpan(idleLimitMs(c, k))
+      const why = c.ttlMs === SHORT_TTL_MS ? '（快取存活時間 5 分鐘，再續比過期後重寫還貴）' : ''
+      $.ui.toast(`已超過 ${span}沒有你的訊息，停止自動續命${why}；你下一則訊息會讓它恢復`, { timeoutMs: 15_000 })
+    }
+    return
+  }
+
+  k.hasSent = true
+  const result = await $.prompt.submit({ text: KEEPALIVE_TEXT })
+  if (result.drop !== undefined) {
+    $.ui.toast(`自動續命的訊息沒送出：${result.drop}`, { timeoutMs: 15_000 })
   }
 }
 
@@ -88,11 +143,49 @@ export const register: Register = (on, options) => {
     hasWarned: false,
   }
   const probe: Probe = { endedAt: undefined, model: undefined, isPrefixChanged: false, hasSuspected: false }
+  const keepAlive: KeepAlive = {
+    isOn: false,
+    idleLimitMs: (typeof options.keepAliveHours === 'number' ? options.keepAliveHours : 3) * 60 * MINUTE_MS,
+    lastUserAt: undefined,
+    hasSent: false,
+    hasStopped: false,
+  }
   let ticker: Timer | undefined
 
   on('session.start', async ($, e, next) => {
     ticker?.cancel()
-    ticker = $.clock.every(TICK_MS, () => void show($, countdown))
+    ticker = $.clock.every(TICK_MS, () => void show($, countdown, keepAlive))
+    await $.command.register({
+      name: 'cache-keepalive',
+      description: '本 session 開關自動續命：快取到期前自動送一則訊息',
+      argumentHint: '[on|off]',
+      immediate: true,
+    })
+
+    return next(e)
+  })
+
+  on('command.run', { command: 'cache-keepalive' }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase()
+    keepAlive.isOn = arg === 'on' ? true : arg === 'off' ? false : !keepAlive.isOn
+    keepAlive.lastUserAt = await $.clock.now()
+    keepAlive.hasStopped = false
+    await show($, countdown, keepAlive)
+
+    const span = describeSpan(keepAlive.idleLimitMs)
+    return {
+      text: keepAlive.isOn
+        ? `自動續命已開啟（只限這個 session）：快取到期前 2 分鐘自動送一則訊息；超過 ${span}沒有你的訊息就停（快取存活時間 5 分鐘時最多 30 分鐘）。`
+        : '自動續命已關閉。',
+    }
+  })
+
+  // Only the person's own prompts count as activity; the keep-alive's never reach this hook.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin?.kind !== 'plugin') {
+      keepAlive.lastUserAt = await $.clock.now()
+      keepAlive.hasStopped = false
+    }
 
     return next(e)
   })
@@ -105,9 +198,10 @@ export const register: Register = (on, options) => {
       probeTtl($, countdown, probe, startedAt, response.usage)
       countdown.sentAt = startedAt
       countdown.hasWarned = false
+      keepAlive.hasSent = false
       probe.endedAt = await $.clock.now()
       probe.model = response.usage.model
-      await show($, countdown)
+      await show($, countdown, keepAlive)
     }
 
     return response
@@ -116,7 +210,7 @@ export const register: Register = (on, options) => {
   // The engine names the TTL it caches with when the model switches; that beats the setting.
   on('classic.PostModelSwitch', async ($, e, next) => {
     countdown.ttlMs = e.cache_ttl === '5m' ? SHORT_TTL_MS : LONG_TTL_MS
-    await show($, countdown)
+    await show($, countdown, keepAlive)
 
     return next(e)
   })

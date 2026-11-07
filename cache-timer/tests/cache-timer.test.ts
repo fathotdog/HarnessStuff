@@ -32,9 +32,28 @@ const beneath = (on: On) => {
   })
   on('classic.PostModelSwitch', () => ({}))
   on('classic.PostCompact', () => ({}))
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
 
   return seen
 }
+
+// Records what the plugin submits; each one is answered by a main-thread step,
+// as the engine would run the turn it starts.
+const submissions = ($: Engine, on: On) => {
+  const texts: string[] = []
+  on('prompt.submit', async (_, e) => {
+    if (e.origin?.kind === 'plugin') {
+      texts.push(e.text)
+      await step($)
+    }
+    return { text: e.text }
+  })
+  return texts
+}
+
+const keepAlive = ($: Engine, args = '') => $.command.run({ command: 'cache-keepalive', args })
+
+const userPrompt = ($: Engine) => $.prompt.submit({ text: 'hi' })
 
 const ttlToasts = (seen: { toasts: string[] }) => seen.toasts.filter(text => text.includes('TTL'))
 
@@ -226,6 +245,95 @@ describe('cache-timer', () => {
     seen.usage = MISS
     await step($)
     expect(ttlToasts(seen)).toHaveLength(1)
+  })
+
+  test('keep-alive is off until toggled, then resends before expiry', async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = beneath(on)
+    const sent = submissions($, on)
+    await start($)
+
+    await step($)
+    await clock.advance(59 * MINUTE_MS)
+    expect(sent).toHaveLength(0)
+
+    await step($)
+    const reply = await keepAlive($)
+    expect(reply.text).toContain('已開啟')
+    expect(seen.statuses.at(-1)).toBe('快取剩 60 分 · 自動續命')
+
+    await clock.advance(57 * MINUTE_MS)
+    expect(sent).toHaveLength(0)
+
+    await clock.advance(1 * MINUTE_MS)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toContain('cache-timer')
+    expect(seen.statuses.at(-1)).toBe('快取剩 60 分 · 自動續命')
+  })
+
+  test('keep-alive sends once per countdown and toggles off', async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = beneath(on)
+    const sent: string[] = []
+    on('prompt.submit', (_, e) => {
+      sent.push(e.text)
+      return { text: e.text }
+    })
+    await start($)
+
+    await step($)
+    await keepAlive($, 'on')
+    await clock.advance(59 * MINUTE_MS)
+    expect(sent).toHaveLength(1)
+
+    await clock.advance(30_000)
+    expect(sent).toHaveLength(1)
+
+    await step($)
+    const reply = await keepAlive($)
+    expect(reply.text).toContain('已關閉')
+    expect(seen.statuses.at(-1)).toBe('快取剩 60 分')
+    await clock.advance(59 * MINUTE_MS)
+    expect(sent).toHaveLength(1)
+  })
+
+  test('keep-alive stops after the idle limit and resumes on a user prompt', { options: { keepAliveHours: 2 } }, async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = beneath(on)
+    const sent = submissions($, on)
+    await start($)
+
+    await step($)
+    await keepAlive($, 'on')
+    await clock.advance(3 * 60 * MINUTE_MS)
+    expect(sent).toHaveLength(2)
+    expect(seen.toasts.some(text => text.includes('停止自動續命'))).toBe(true)
+    expect(seen.statuses.at(-1)).toBe('快取已過期')
+
+    await userPrompt($)
+    await step($)
+    await clock.advance(59 * MINUTE_MS)
+    expect(sent).toHaveLength(3)
+  })
+
+  test('keep-alive with a 5 minute TTL resends every few minutes, then stops at 30 idle minutes', { options: { ttl: '5m' } }, async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = beneath(on)
+    const sent = submissions($, on)
+    await start($)
+
+    await step($)
+    await keepAlive($, 'on')
+    await clock.advance(20 * MINUTE_MS)
+    expect(sent.length).toBeGreaterThanOrEqual(5)
+
+    await clock.advance(20 * MINUTE_MS)
+    const atLimit = sent.length
+    expect(seen.toasts.some(text => text.includes('30 分鐘') && text.includes('停止自動續命'))).toBe(true)
+    expect(seen.statuses.at(-1)).toBe('快取已過期')
+
+    await clock.advance(20 * MINUTE_MS)
+    expect(sent).toHaveLength(atLimit)
   })
 
   test('a miss after the countdown ran out is expected', async ($, on) => {
