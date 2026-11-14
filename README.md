@@ -62,3 +62,22 @@ claude plugin test ./cache-timer
 ```
 
 本機直接載入開發中的版本：`claude --plugin-dir ./cache-timer`。
+
+### portfolio-snapshot
+
+一個 skill：把某一天的實際持倉存成三份對得上的紀錄，包括 Obsidian 筆記 `portfolio/<日期>_持倉快照.md`、Google Sheets「交易紀錄」的快照分頁，以及一張截圖。資料來源是玉山證券 CTS（台股、複委託）與統一期貨（透過本機的 Future Assistant 後端，唯讀）。
+
+安裝時範圍選 project，裝在股票研究的 vault 裡（skill 會寫入該專案的 `portfolio/`）：
+
+```
+/plugin install portfolio-snapshot --marketplace fathotdog/HarnessStuff
+```
+
+使用：在 vault 裡說「做持倉快照」，或輸入 `/portfolio-snapshot:portfolio-snapshot`。
+
+需要：
+
+- Claude in Chrome（CTS 由使用者自己登入，Claude 只讀帳務頁）
+- Google Sheets 連接器；專案 `CLAUDE.md` 寫上「交易紀錄」試算表 ID（沒寫時會用 Drive 搜尋）
+- Future Assistant 本機 repo 與它的 `.env.local`（統一期貨正式帳號，唯讀）
+- [uv](https://docs.astral.sh/uv/)（跑報酬計算與截圖拼接腳本）

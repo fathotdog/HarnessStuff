@@ -1,0 +1,6 @@
+{
+  "name": "portfolio-snapshot",
+  "version": "0.1.0",
+  "author": { "name": "nornor" },
+  "description": "持倉快照：讀玉山證券 CTS（台股、複委託）與統一期貨（Future Assistant）部位，寫成 Obsidian 快照筆記、Google Sheets 快照分頁與一張截圖。"
+}
